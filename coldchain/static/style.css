@@ -114,6 +114,13 @@ button:hover, .button:hover { filter: brightness(0.96); }
   vertical-align: middle;
 }
 .badge-warn { background: var(--warn-soft); color: var(--warn); }
+.badge-always { background: var(--ok-soft); color: var(--ok); }
+.badge-partial { background: var(--warn-soft); color: var(--warn); }
+.badge-never { background: #eef1f5; color: var(--muted); }
+tr.conclusion-always td { background: rgba(27, 127, 75, 0.05); }
+tr.conclusion-never td { color: var(--muted); }
+.verify-form { gap: 0.5rem; align-items: center; }
+.verify-input { flex-direction: row; align-items: center; gap: 0.35rem; }
 
 .totals { display: flex; gap: 2rem; margin: 0.75rem 0 1rem; flex-wrap: wrap; }
 .totals div { display: flex; flex-direction: column; }

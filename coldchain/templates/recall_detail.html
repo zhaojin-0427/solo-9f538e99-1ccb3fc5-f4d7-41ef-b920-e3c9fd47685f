@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}核查单 {{ detail.check.check_no }} · 冷链温区账本{% endblock %}
+{% block content %}
+{% set check = detail.check %}
+<h1>核查单 <span class="mono">{{ check.check_no }}</span></h1>
+
+{% if error %}
+  <div class="flash flash-error">
+    <strong>{{ error }}</strong>
+    {% if error_details %}<ul>{% for detail_item in error_details %}<li>{{ detail_item }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+{% endif %}
+
+<section class="card">
+  <p class="muted">
+    冻结月份 <strong>{{ check.month }}</strong> · SKU <strong>{{ check.sku }}</strong> ·
+    创建于 {{ display_utc(check.created_at) }}。
+    结论按<strong>当前已保存的全部实核记录</strong>计算；补登无解决定不会写入，下列结果保持不变。
+  </p>
+  <p>
+    <a class="button ghost" href="{{ url_for('api_recall_detail', check_no=check.check_no) }}">JSON</a>
+    <a class="button ghost" href="{{ url_for('recall_page') }}">返回召回核查</a>
+  </p>
+</section>
+
+<section class="card">
+  <h2>涉及流水（共 {{ detail.involved_shipments|length }} 笔）</h2>
+  <table class="compact">
+    <thead><tr><th>流水号</th><th>冻结箱数</th></tr></thead>
+    <tbody>
+    {% for ship in detail.involved_shipments %}
+      <tr><td class="mono">{{ ship.sequence_no }}</td><td><strong>{{ ship.frozen_boxes }}</strong></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>选定批号后的流水结论</h2>
+  <p class="muted">
+    对每个批号，候选流水分成三类：<strong>全部可行分配都含</strong>（该批号一定有箱进入此流水）、
+    <strong>仅部分可行分配含</strong>（是否进入尚不确定）、<strong>肯定不含</strong>（该批号没有箱进入此流水）。
+    已补登实核的组合以实核值固定。
+  </p>
+  {% for group in detail.lot_groups %}
+    <div class="sku-block" id="lot-{{ loop.index }}">
+      <h3>批号 {{ group.lot_no }} · 共 {{ group.boxes }} 箱</h3>
+      <table class="compact">
+        <thead><tr><th>候选流水</th><th>冻结箱数</th><th>结论</th><th>实核箱数</th><th>补登</th></tr></thead>
+        <tbody>
+        {% for pair in group.pairs %}
+          <tr class="conclusion-{{ pair.conclusion }}">
+            <td class="mono">{{ pair.sequence_no }}</td>
+            <td>{{ pair.frozen_boxes }}</td>
+            <td><span class="badge badge-{{ pair.conclusion }}">{{ pair.conclusion_label }}</span></td>
+            <td>{% if pair.verified_boxes is none %}<span class="muted">未补登</span>{% else %}<strong>{{ pair.verified_boxes }}</strong>{% endif %}</td>
+            <td>
+              {% if pair.verified_boxes is none %}
+              <form method="post" action="{{ url_for('recall_verify_submit', check_no=check.check_no) }}" class="inline verify-form">
+                <input type="hidden" name="lot_no" value="{{ group.lot_no }}">
+                <input type="hidden" name="sequence_no" value="{{ pair.sequence_no }}">
+                <label class="verify-input">实核箱数（可填 0）
+                  <input type="number" name="verified_boxes" min="0" step="1" required style="min-width: 7rem;">
+                </label>
+                <button type="submit">补登</button>
+              </form>
+              {% else %}
+                <span class="muted">已固定，不可更改</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>结论分组（全核查单视角）</h2>
+  <div class="grid">
+    {% for key in ['always', 'partial', 'never'] %}
+      <div>
+        <h3><span class="badge badge-{{ key }}">{{ detail.conclusion_labels[key] }}</span>（{{ detail.buckets[key]|length }}）</h3>
+        {% if detail.buckets[key] %}
+          <table class="compact">
+            <thead><tr><th>批号</th><th>流水</th><th>实核</th></tr></thead>
+            <tbody>
+            {% for pair in detail.buckets[key] %}
+              <tr>
+                <td>{{ pair.lot_no }}</td>
+                <td class="mono">{{ pair.sequence_no }}</td>
+                <td>{% if pair.verified_boxes is none %}—{% else %}{{ pair.verified_boxes }}{% endif %}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">无</p>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>已保存实核记录（{{ detail.verifications|length }} 条）</h2>
+  {% if detail.verifications %}
+    <table class="compact">
+      <thead><tr><th>批号</th><th>流水</th><th>实核箱数</th><th>补登时刻</th></tr></thead>
+      <tbody>
+      {% for row in detail.verifications %}
+        <tr>
+          <td>{{ row.lot_no }}</td>
+          <td class="mono">{{ row.sequence_no }}</td>
+          <td><strong>{{ row.verified_boxes }}</strong></td>
+          <td class="mono">{{ display_utc(row.created_at) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">尚未收到收货方回报。</p>
+  {% endif %}
+</section>
+{% endblock %}

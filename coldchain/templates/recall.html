@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}召回核查 · 冷链温区账本{% endblock %}
+{% block content %}
+<h1>混装出库召回核查</h1>
+
+{% if error %}
+  <div class="flash flash-error">
+    <strong>{{ error }}</strong>
+    {% if error_details %}<ul>{% for detail in error_details %}<li>{{ detail }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+{% endif %}
+
+<section class="card">
+  <h2>新建核查单</h2>
+  <p class="muted">
+    选择<strong>已冻结的 UTC 月份</strong>与该月存在出库的 <strong>SKU</strong>，上传最多 20 行 CSV：
+    列为 <code>批号,箱数,候选流水号</code>，批号在文件内唯一、箱数为正整数，候选流水号以竖线
+    <code>|</code>（或全角 <code>｜</code>）分隔；涉及流水去重后最多 20 笔，且都须属于所选月份和 SKU。
+    仅当每个批号的箱数能全数分给自身候选流水、且每笔涉及流水恰好分到冻结箱数时才会保存，并给出核查单号。
+  </p>
+  {% if months %}
+  <form method="post" action="{{ url_for('recall_submit') }}" enctype="multipart/form-data" class="stack">
+    <div class="inline">
+      <label>已冻结月份
+        <select name="month" id="recall-month" required>
+          {% for month in months %}
+            <option value="{{ month.month }}" {{ 'selected' if month.month == selected_month else '' }}>{{ month.month }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>SKU
+        <select name="sku" id="recall-sku" required>
+          {% for sku in skus %}
+            <option value="{{ sku.sku }}" {{ 'selected' if sku.sku == selected_sku else '' }}>{{ sku.sku }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>核查 CSV
+      <input type="file" name="file" accept=".csv,text/csv" required>
+    </label>
+    <div>
+      <button type="submit">校验并生成核查单</button>
+    </div>
+  </form>
+  {% else %}
+    <p class="muted">尚无已冻结月份，请先<a href="{{ url_for('upload_page') }}">上传月结 CSV</a>。</p>
+  {% endif %}
+</section>
+
+<div class="card">
+  <h2>CSV 示例</h2>
+<pre class="sample">批号,箱数,候选流水号
+LOT-A,10,OUT-001|OUT-002
+LOT-B,7,OUT-002|OUT-003</pre>
+</div>
+
+<section class="card">
+  <h2>核查单历史</h2>
+  {% if checks %}
+    <table>
+      <thead><tr><th>核查单号</th><th>月份</th><th>SKU</th><th>批号</th><th>涉及流水</th><th>实核记录</th><th>创建时刻</th><th></th></tr></thead>
+      <tbody>
+      {% for check in checks %}
+        <tr>
+          <td class="mono"><strong>{{ check.check_no }}</strong></td>
+          <td>{{ check.month }}</td>
+          <td>{{ check.sku }}</td>
+          <td>{{ check.lot_count }}</td>
+          <td>{{ check.shipment_count }}</td>
+          <td>{{ check.verification_count }}</td>
+          <td class="mono">{{ display_utc(check.created_at) }}</td>
+          <td><a href="{{ url_for('recall_detail_page', check_no=check.check_no) }}">打开核查单</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">尚无核查单。</p>
+  {% endif %}
+</section>
+
+<script>
+(function () {
+  const monthSelect = document.getElementById('recall-month');
+  const skuSelect = document.getElementById('recall-sku');
+  if (!monthSelect || !skuSelect) return;
+  const currentSku = {{ selected_sku|tojson }};
+  monthSelect.addEventListener('change', async function () {
+    const response = await fetch("{{ url_for('api_recall_skus') }}?month=" + encodeURIComponent(monthSelect.value));
+    if (!response.ok) return;
+    const body = await response.json();
+    skuSelect.innerHTML = '';
+    body.skus.forEach(function (sku) {
+      const option = document.createElement('option');
+      option.value = sku;
+      option.textContent = sku;
+      if (sku === currentSku) option.selected = true;
+      skuSelect.appendChild(option);
+    });
+  });
+})();
+</script>
+{% endblock %}

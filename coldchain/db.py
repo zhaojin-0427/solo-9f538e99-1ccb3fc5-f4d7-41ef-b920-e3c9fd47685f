@@ -74,6 +74,68 @@ CREATE TABLE IF NOT EXISTS audit_log (
     version_no           INTEGER,
     summary              TEXT NOT NULL
 );
+
+-- Recall checks: reconstruct where mixed-loaded lots of one SKU went when the
+-- lot-level detail of the outbound month was lost. A check is only persisted
+-- when the box assignment problem has at least one feasible solution.
+CREATE TABLE IF NOT EXISTS recall_checks (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_no             TEXT NOT NULL UNIQUE,
+    month                TEXT NOT NULL REFERENCES months(month),
+    sku                  TEXT NOT NULL,
+    created_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recall_checks_month_sku ON recall_checks(month, sku);
+
+CREATE TABLE IF NOT EXISTS recall_lots (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id             INTEGER NOT NULL REFERENCES recall_checks(id),
+    lot_no               TEXT NOT NULL,
+    boxes                INTEGER NOT NULL CHECK (boxes > 0),
+    row_order            INTEGER NOT NULL,
+    UNIQUE (check_id, lot_no)
+);
+
+-- Every candidate (lot, shipment) pair named in the upload. A shipment appears
+-- here at most once per check and must belong to the check's frozen month and
+-- SKU; its frozen box count is snapshotted so later reads need no joins.
+CREATE TABLE IF NOT EXISTS recall_candidates (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id             INTEGER NOT NULL REFERENCES recall_checks(id),
+    lot_id               INTEGER NOT NULL REFERENCES recall_lots(id),
+    shipment_id          INTEGER NOT NULL REFERENCES shipments(id),
+    sequence_no          TEXT NOT NULL,
+    frozen_boxes         INTEGER NOT NULL,
+    UNIQUE (check_id, lot_id, shipment_id),
+    UNIQUE (check_id, shipment_id, lot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recall_candidates_check ON recall_candidates(check_id);
+
+-- Verified box counts reported back by the receiving party. Zero is allowed.
+-- The same pair may only be re-submitted with the identical value; a different
+-- value is rejected, so every row stays immutable once written.
+CREATE TABLE IF NOT EXISTS recall_verifications (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id             INTEGER NOT NULL REFERENCES recall_checks(id),
+    lot_id               INTEGER NOT NULL REFERENCES recall_lots(id),
+    shipment_id          INTEGER NOT NULL REFERENCES shipments(id),
+    verified_boxes       INTEGER NOT NULL CHECK (verified_boxes >= 0),
+    created_at           TEXT NOT NULL,
+    UNIQUE (check_id, lot_id, shipment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recall_verifications_check ON recall_verifications(check_id);
+
+-- Conclusion snapshot of every involved (lot, shipment) pair as of the latest
+-- accepted verification. Recomputed inside the same write transaction, so a
+-- check always opens with the conclusion that was current at last save.
+CREATE TABLE IF NOT EXISTS recall_conclusions (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id             INTEGER NOT NULL REFERENCES recall_checks(id),
+    lot_id               INTEGER NOT NULL REFERENCES recall_lots(id),
+    shipment_id          INTEGER NOT NULL REFERENCES shipments(id),
+    conclusion           TEXT NOT NULL CHECK (conclusion IN ('always','partial','never')),
+    UNIQUE (check_id, lot_id, shipment_id)
+);
 """
 
 # Append-only protections. Facts and the knowledge ledger are never rewritten;
@@ -130,6 +192,38 @@ END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete
 BEFORE DELETE ON audit_log BEGIN
     SELECT RAISE(ABORT, 'audit log is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_checks_no_update
+BEFORE UPDATE ON recall_checks BEGIN
+    SELECT RAISE(ABORT, 'recall checks are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_checks_no_delete
+BEFORE DELETE ON recall_checks BEGIN
+    SELECT RAISE(ABORT, 'recall checks are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_lots_no_update
+BEFORE UPDATE ON recall_lots BEGIN
+    SELECT RAISE(ABORT, 'recall lots are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_lots_no_delete
+BEFORE DELETE ON recall_lots BEGIN
+    SELECT RAISE(ABORT, 'recall lots are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_candidates_no_update
+BEFORE UPDATE ON recall_candidates BEGIN
+    SELECT RAISE(ABORT, 'recall candidates are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_candidates_no_delete
+BEFORE DELETE ON recall_candidates BEGIN
+    SELECT RAISE(ABORT, 'recall candidates are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_verifications_no_update
+BEFORE UPDATE ON recall_verifications BEGIN
+    SELECT RAISE(ABORT, 'verified records are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS recall_verifications_no_delete
+BEFORE DELETE ON recall_verifications BEGIN
+    SELECT RAISE(ABORT, 'verified records are immutable');
 END;
 """
 

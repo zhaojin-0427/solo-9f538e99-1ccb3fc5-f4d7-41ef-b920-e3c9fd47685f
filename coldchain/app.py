@@ -17,7 +17,7 @@ from flask import (
     url_for,
 )
 
-from . import facts, knowledge
+from . import facts, knowledge, recall
 from .db import connect, db_path_from_env, init_db
 from .errors import ConflictError, NotFoundError, ValidationError
 from .timeutil import display_utc
@@ -256,6 +256,108 @@ def create_app(test_config=None):
             selected_version=version_param or "",
         )
 
+    # ---------- recall pages ----------
+
+    @app.get("/recall")
+    def recall_page():
+        db = get_db()
+        months = facts.list_months(db)
+        selected_month = request.args.get("month") or (months[0]["month"] if months else "")
+        skus = recall.list_skus_for_month(db, selected_month) if selected_month else []
+        selected_sku = request.args.get("sku") or ""
+        return render_template(
+            "recall.html",
+            months=months,
+            skus=skus,
+            checks=recall.list_checks(db),
+            selected_month=selected_month,
+            selected_sku=selected_sku,
+            error=None,
+            error_details=[],
+        )
+
+    @app.post("/recall")
+    def recall_submit():
+        db = get_db()
+        upload = request.files.get("file")
+        month = request.form.get("month") or ""
+        sku = request.form.get("sku") or ""
+        try:
+            if upload is None or not upload.filename:
+                raise ValidationError("请选择要上传的召回核查 CSV 文件")
+            result = recall.create_check(db, month, sku, upload.read())
+        except (ValidationError, ConflictError, NotFoundError) as exc:
+            months = facts.list_months(db)
+            try:
+                skus = recall.list_skus_for_month(db, month) if month else []
+            except ValidationError:
+                skus = []
+            return (
+                render_template(
+                    "recall.html",
+                    months=months,
+                    skus=skus,
+                    checks=recall.list_checks(db),
+                    selected_month=month,
+                    selected_sku=sku,
+                    error=exc.message,
+                    error_details=getattr(exc, "details", []),
+                ),
+                400 if isinstance(exc, ValidationError) else (404 if isinstance(exc, NotFoundError) else 409),
+            )
+        flash(
+            f"核查单 {result['check_no']} 已保存：{result['lot_count']} 个批号、"
+            f"{result['shipment_count']} 笔涉及流水，存在可行分配。",
+            "success",
+        )
+        return redirect(url_for("recall_detail_page", check_no=result["check_no"]))
+
+    @app.get("/recall/<check_no>")
+    def recall_detail_page(check_no):
+        detail = recall.get_check_detail(get_db(), check_no)
+        return render_template("recall_detail.html", detail=detail)
+
+    @app.post("/recall/<check_no>/verify")
+    def recall_verify_submit(check_no):
+        db = get_db()
+        try:
+            result = recall.add_verification(
+                db,
+                check_no,
+                lot_no=request.form.get("lot_no"),
+                sequence_no=request.form.get("sequence_no"),
+                verified_boxes=request.form.get("verified_boxes"),
+            )
+        except (ValidationError, ConflictError, NotFoundError) as exc:
+            status = 400
+            if isinstance(exc, ConflictError):
+                status = 409
+            elif isinstance(exc, NotFoundError):
+                status = 404
+            detail = recall.get_check_detail(db, check_no)
+            return (
+                render_template(
+                    "recall_detail.html",
+                    detail=detail,
+                    error=exc.message,
+                    error_details=getattr(exc, "details", []),
+                ),
+                status,
+            )
+        if result["idempotent"]:
+            flash(
+                f"批号 {result['lot_no']} / 流水 {result['sequence_no']} 的实核箱数 "
+                f"{result['verified_boxes']} 与原记录相同，沿用原记录，未重复写入。",
+                "success",
+            )
+        else:
+            flash(
+                f"已补登实核 {result['verified_boxes']} 箱，并按全部已保存实核记录重新校验，"
+                "各流水结论已更新。",
+                "success",
+            )
+        return redirect(url_for("recall_detail_page", check_no=check_no))
+
     # ---------- API ----------
 
     @app.get("/api/months")
@@ -334,5 +436,53 @@ def create_app(test_config=None):
             "SELECT * FROM audit_log ORDER BY id DESC LIMIT 200"
         ).fetchall()
         return jsonify({"ok": True, "entries": [dict(row) for row in rows]})
+
+    @app.get("/api/recall/checks")
+    def api_recall_checks():
+        db = get_db()
+        return jsonify({"ok": True, "checks": [dict(row) for row in recall.list_checks(db)]})
+
+    @app.get("/api/recall/skus")
+    def api_recall_skus():
+        month = request.args.get("month")
+        if not month:
+            raise ValidationError("缺少 month 参数（YYYY-MM）")
+        db = get_db()
+        rows = recall.list_skus_for_month(db, month)
+        return jsonify({"ok": True, "month": month, "skus": [row["sku"] for row in rows]})
+
+    @app.post("/api/recall/checks")
+    def api_recall_create():
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            raise ValidationError("请以 multipart/form-data 上传字段 file")
+        result = recall.create_check(
+            get_db(),
+            request.form.get("month"),
+            request.form.get("sku"),
+            upload.read(),
+        )
+        result["ok"] = True
+        return jsonify(result), 201
+
+    @app.get("/api/recall/checks/<check_no>")
+    def api_recall_detail(check_no):
+        detail = recall.get_check_detail(get_db(), check_no)
+        return jsonify({"ok": True, **recall.check_json(detail)})
+
+    @app.post("/api/recall/checks/<check_no>/verifications")
+    def api_recall_verify(check_no):
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValidationError("请求体必须是 JSON 对象")
+        result = recall.add_verification(
+            get_db(),
+            check_no,
+            lot_no=payload.get("lot_no"),
+            sequence_no=payload.get("sequence_no"),
+            verified_boxes=payload.get("verified_boxes"),
+        )
+        result["ok"] = True
+        return jsonify(result), 200 if result["idempotent"] else 201
 
     return app
